@@ -15,4 +15,15 @@ public class OtpService {
         }
         return code.toString();
     }
+    public void saveCodeToFile(String login, String code) {
+        // Используем FileWriter в режиме "append" (true), чтобы новые коды не стирали старые
+        try (java.io.FileWriter writer = new java.io.FileWriter("otp_codes.txt", true)) {
+            String entry = String.format("[%s] Юзер: %s | Код: %s%n",
+                    java.time.LocalDateTime.now(), login, code);
+            writer.write(entry);
+            System.out.println("LOG: Код сохранен в файл otp_codes.txt");
+        } catch (java.io.IOException e) {
+            System.err.println("ОШИБКА записи в файл: " + e.getMessage());
+        }
+    }
 }

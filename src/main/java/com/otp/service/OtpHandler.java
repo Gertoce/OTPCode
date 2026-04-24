@@ -1,15 +1,13 @@
 package com.otp.service;
 
-import com.otp.dao.TokenDAO;
-import com.otp.dao.UserDAO;
-import com.otp.dao.OtpDAO;
-import com.otp.dao.ConfigDAO;
+import com.otp.dao.*;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
+import java.util.Map;
 
 public class OtpHandler implements HttpHandler {
     private final UserDAO userDAO = new UserDAO();
@@ -20,137 +18,102 @@ public class OtpHandler implements HttpHandler {
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
-        exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
-        String path = exchange.getRequestURI().getPath(); // Получаем путь (например, /api/otp/verify)
+        String path = exchange.getRequestURI().getPath();
         String query = exchange.getRequestURI().getQuery();
-        String response = "";
-        int statusCode = 200;
+        Map<String, String> params = parseQuery(query);
+
+        System.out.println("LOG: Запрос на путь: " + path);
 
         try {
-            // ПУТЬ 1: ГЕНЕРАЦИЯ ( http://localhost:8080/api/otp/generate?login=danil&role=admin )
+            // 1. РЕГИСТРАЦИЯ
             if (path.contains("/register")) {
-                java.util.Map<String, String> params = parseQuery(query);
                 String login = params.getOrDefault("login", "");
                 String role = params.getOrDefault("role", "USER").toUpperCase();
 
-                try {
-                    userDAO.registerUser(login, "password_placeholder", role);
-                    sendResponse(exchange, "УСПЕХ: Пользователь " + login + " зарегистрирован.", 200);
-                } catch (SQLException e) {
-                    sendResponse(exchange, "ОШИБКА: " + e.getMessage(), 400);
+                if (login.isEmpty()) {
+                    sendResponse(exchange, "ОШИБКА: Логин пуст", 400);
+                    return;
                 }
+                userDAO.registerUser(login, "pass_hash", role);
+                sendResponse(exchange, "УСПЕХ: Пользователь " + login + " зарегистрирован как " + role, 200);
             }
-            // ПУТЬ 2: ПРОВЕРКА ( http://localhost:8080/api/otp/verify?code=123456 )
-            else if (path.endsWith("/verify")) {
-                // 1. Извлекаем параметры из query (нужны и code, и login)
-                java.util.Map<String, String> params = parseQuery(query);
-                String inputCode = params.getOrDefault("code", "");
-                String login = params.getOrDefault("login", "danil"); // Берем логин из запроса или хардкодим для теста
 
-                // 2. Ищем userId в базе по этому логину (РЕШАЕМ ОШИБКУ ТУТ)
+            // 2. ГЕНЕРАЦИЯ OTP
+            else if (path.contains("/generate")) {
+                String login = params.getOrDefault("login", "danil");
+                int userId = userDAO.getUserIdByLogin(login);
+
+                if (userId == -1) {
+                    sendResponse(exchange, "ОШИБКА: Пользователь не найден", 404);
+                    return;
+                }
+
+                String code = otpService.generateCode(configDAO.getCodeLength());
+                otpDAO.saveOtp(userId, code, configDAO.getTtlSeconds());
+
+                // Рассылка (Почта + Файл)
+                emailService.sendCode("gertocelol@yandex.ru", code); // Поставь свою почту
+                otpService.saveCodeToFile(login, code);
+
+                sendResponse(exchange, "КОД ОТПРАВЛЕН на почту и сохранен в файл!", 200);
+            }
+
+            // 3. ПРОВЕРКА OTP И ВЫДАЧА ТОКЕНА
+            else if (path.contains("/verify")) {
+                String inputCode = params.getOrDefault("code", "");
+                String login = params.getOrDefault("login", "danil");
                 int userId = userDAO.getUserIdByLogin(login);
 
                 if (userId != -1 && otpDAO.validateOtp(userId, inputCode)) {
                     TokenDAO tokenDAO = new TokenDAO();
                     String token = tokenDAO.createToken(userId);
-
-                    response = "АВТОРИЗАЦИЯ УСПЕШНА! Ваш токен доступа: " + token;
-                    System.out.println("LOG: Выдан токен для пользователя: " + login);
+                    sendResponse(exchange, "АВТОРИЗАЦИЯ УСПЕШНА! Ваш токен: " + token, 200);
                 } else {
-                    statusCode = 401;
-                    response = "ОШИБКА: Неверный код, логин или время истекло.";
+                    sendResponse(exchange, "ОШИБКА: Неверный код или логин", 401);
                 }
             }
-            else if (path.endsWith("/admin/users")) {
-                java.util.Map<String, String> params = parseQuery(query);
-                String token = params.getOrDefault("token", "");
 
+            // 4. СПИСОК ПОЛЬЗОВАТЕЛЕЙ (ТОЛЬКО ДЛЯ АДМИНА)
+            else if (path.contains("/admin/users")) {
+                String token = params.getOrDefault("token", "");
                 TokenDAO tokenDAO = new TokenDAO();
                 String role = tokenDAO.getRoleByToken(token);
 
-                // ПРОВЕРКА РОЛИ (Пункт ТЗ: API Администратора)
                 if ("ADMIN".equalsIgnoreCase(role)) {
-                    response = userDAO.getAllNonAdminUsers();
-                    System.out.println("LOG: Админ просмотрел список пользователей.");
+                    String users = userDAO.getAllNonAdminUsers();
+                    sendResponse(exchange, users, 200);
                 } else {
-                    statusCode = 403;
-                    response = "ОШИБКА 403: Доступ только для администраторов (нужен валидный токен).";
-                    System.out.println("LOG: Попытка несанкционированного доступа к списку пользователей!");
+                    sendResponse(exchange, "ОШИБКА 403: Доступ запрещен", 403);
                 }
             }
+
+            // ЕСЛИ ПУТЬ НЕ НАЙДЕН
             else {
-                response = "Используйте /generate или /verify";
+                sendResponse(exchange, "Используйте /register, /generate, /verify или /admin/users", 404);
             }
+
         } catch (Exception e) {
-            statusCode = 500;
-            response = "Ошибка: " + e.getMessage();
-        }
-
-        byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
-        exchange.sendResponseHeaders(statusCode, bytes.length);
-        try (OutputStream os = exchange.getResponseBody()) {
-            os.write(bytes);
-        }
-        if (path.endsWith("/register")) {
-            // Параметры из ссылки: ?login=petya&pass=123&role=USER
-            // В реальном проекте параметры берутся через парсинг query
-            String login = "petya"; // Вытяни из query
-            String pass = "hash_тут"; // В идеале прогнать через BCrypt
-            String role = "ADMIN"; // Например, пытаемся создать второго админа
-
-            try {
-                userDAO.registerUser(login, pass, role);
-                response = "Пользователь " + login + " зарегистрирован!";
-            } catch (SQLException e) {
-                statusCode = 400; // Ошибка клиента
-                response = e.getMessage(); // Вернет "Администратор уже существует..."
-            }
-        }
-        // Внутри метода handle класса OtpHandler
-        if (path.endsWith("/register")) {
-            // Разбиваем query string (например: login=danil&role=ADMIN)
-            java.util.Map<String, String> params = new java.util.HashMap<>();
-            if (query != null) {
-                for (String param : query.split("&")) {
-                    String[] entry = param.split("=");
-                    if (entry.length > 1) params.put(entry[0], entry[1]);
-                }
-            }
-
-            String login = params.getOrDefault("login", "guest");
-            String role = params.getOrDefault("role", "USER");
-            String passHash = "dummy_hash"; // В реале тут будет BCrypt.hashpw(...)
-
-            try {
-                userDAO.registerUser(login, passHash, role);
-                response = "УСПЕХ: Пользователь " + login + " сохранен как " + role;
-            } catch (SQLException e) {
-                statusCode = 400; // Bad Request
-                response = "ОШИБКА РЕГИСТРАЦИИ: " + e.getMessage();
-                System.out.println("LOG: Ошибка при регистрации: " + e.getMessage());
-            }
+            e.printStackTrace();
+            sendResponse(exchange, "ВНУТРЕННЯЯ ОШИБКА: " + e.getMessage(), 500);
         }
     }
-    private java.util.Map<String, String> parseQuery(String query) {
-        java.util.Map<String, String> params = new java.util.HashMap<>();
+
+    private Map<String, String> parseQuery(String query) {
+        Map<String, String> params = new java.util.HashMap<>();
         if (query != null) {
             for (String param : query.split("&")) {
                 String[] entry = param.split("=");
-                if (entry.length > 1) {
-                    params.put(entry[0], entry[1]);
-                }
+                if (entry.length > 1) params.put(entry[0], entry[1]);
             }
         }
         return params;
     }
+
     private void sendResponse(HttpExchange exchange, String response, int statusCode) throws IOException {
-        // Устанавливаем кодировку UTF-8
+        byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
-
-        byte[] bytes = response.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         exchange.sendResponseHeaders(statusCode, bytes.length);
-
-        try (java.io.OutputStream os = exchange.getResponseBody()) {
+        try (OutputStream os = exchange.getResponseBody()) {
             os.write(bytes);
         }
     }
