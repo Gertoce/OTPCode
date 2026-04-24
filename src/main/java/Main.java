@@ -1,37 +1,45 @@
+import com.otp.dao.ConfigDAO;
+import com.otp.dao.OtpDAO;
 import com.otp.dao.UserDAO;
-import com.otp.service.AuthService;
+import com.otp.service.OtpService;
+import java.util.Scanner;
+
+import java.sql.SQLException;
+
+import com.otp.service.EmailService;
 
 public class Main {
     public static void main(String[] args) {
         UserDAO userDAO = new UserDAO();
-        AuthService authService = new AuthService(); // Наш новый шифровальщик
+        OtpDAO otpDAO = new OtpDAO();
+        OtpService otpService = new OtpService();
+        ConfigDAO configDAO = new ConfigDAO();
+        EmailService emailService = new EmailService(); // Наш новый почтальон
 
         try {
-            // 1. Регистрируем админа
-            String adminPassword = "boss_password";
-            // Шифруем пароль ПЕРЕД сохранением
-            String adminHash = authService.hashPassword(adminPassword);
 
-            if (!userDAO.isAdminExists()) {
-                userDAO.saveUser("admin", adminHash, "ADMIN");
-                System.out.println("Админ зарегистрирован. Его хэш в базе: " + adminHash);
-            }
+            String login = "danil";
+            int userId = userDAO.getUserIdByLogin(login);
+            String myRealEmail = "gertocelol@yandex.ru";
 
-            // 2. Регистрируем обычного пользователя
-            String userPass = "my_password_123";
-            String userHash = authService.hashPassword(userPass);
+// 1. ГЕНЕРАЦИЯ
+            String generatedCode = otpService.generateCode(configDAO.getCodeLength());
+            otpDAO.saveOtp(userId, generatedCode, configDAO.getTtlSeconds());
 
-            userDAO.saveUser("danil", userHash, "USER");
-            System.out.println("Пользователь danil зарегистрирован. Его хэш: " + userHash);
+// 2. ОТПРАВКА
+            emailService.sendCode(myRealEmail, generatedCode);
+            System.out.println("Письмо улетело! Жду код из почты...");
 
-            // 3. ПРОВЕРКА: Как работает вход (Login)
-            System.out.println("\n--- Проверка входа ---");
-            String inputPass = "my_password_123"; // То, что ввел пользователь
+// 3. ВВОД ИЗ КОНСОЛИ (Остановка программы)
+            System.out.print("Введите код подтверждения: ");
+            Scanner scanner = new Scanner(System.in);
+            String userInput = scanner.nextLine(); // Программа замрет и будет ждать тебя!
 
-            if (authService.checkPassword(inputPass, userHash)) {
-                System.out.println("Доступ разрешен! Пароль подошел к хэшу.");
+// 4. ПРОВЕРКА
+            if (otpDAO.validateOtp(userId, userInput)) {
+                System.out.println("Код верный. Доступ разрешен.");
             } else {
-                System.out.println("Ошибка! Пароль неверный.");
+                System.out.println("ОШИБКА: Код неверный, использован или просрочен.");
             }
 
         } catch (Exception e) {

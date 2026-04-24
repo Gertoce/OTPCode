@@ -33,4 +33,15 @@ public class UserDAO {
         }
         return false;
     }
+    public static int getUserIdByLogin(String login) throws SQLException {
+        String sql = "SELECT id FROM users WHERE login = ?";
+        try (Connection conn = DatabaseConfig.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, login);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) return rs.getInt("id");
+            }
+        }
+        return -1; // Если пользователь не найден
+    }
 }
