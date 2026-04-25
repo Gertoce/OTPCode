@@ -52,7 +52,7 @@ public class OtpHandler implements HttpHandler {
                 otpDAO.saveOtp(userId, code, configDAO.getTtlSeconds());
 
                 // Рассылка (Почта + Файл)
-                emailService.sendCode("gertocelol@yandex.ru", code); // Поставь свою почту
+                emailService.sendCode("ваша_почта@yandex.ru", code); // Поставь свою почту
                 otpService.saveCodeToFile(login, code);
 
                 sendResponse(exchange, "КОД ОТПРАВЛЕН на почту и сохранен в файл!", 200);
